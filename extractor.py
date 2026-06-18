@@ -6,13 +6,11 @@ from typing import List, Dict
 # 常量定义
 # ============================================================
 
-# 教育经历节标题
 EDU_HEADERS = [
     "教育经历", "教育背景", "教育",
     "Education", "EDUCATION",
 ]
 
-# 技能节标题
 SKILL_HEADERS = [
     "专业技能", "专业能力", "技术能力", "技术技能", "编程技能",
     "办公能力", "外语能力", "语言能力", "技能证书",
@@ -20,16 +18,16 @@ SKILL_HEADERS = [
     "个人技能",
 ]
 
-# 工作/实习/项目经历节标题
 EXP_HEADERS = [
     "工作经历", "实习经历", "项目经历", "工作经验", "项目经验",
     "校内实践", "社会实践", "社会活动",
+    "论文发表", "论文在投", "英方学位毕业课题", "毕业课题",
+    "科研项目",
     "Work Experience", "EXPERIENCE", "Experience",
     "Internship", "INTERNSHIP",
     "Project", "PROJECT",
 ]
 
-# 通用停止关键词（节边界检测）
 STOP_KEYWORDS = [
     "项目经历", "实习经历", "工作经历", "校园经历",
     "专业技能", "专业能力", "技术能力", "技术技能", "编程技能",
@@ -39,18 +37,18 @@ STOP_KEYWORDS = [
     "项目经验", "工作经验",
     "校内实践", "社会实践", "社会活动",
     "个人技能",
+    "论文发表", "论文在投", "英方学位", "毕业课题",
+    "科研项目",
     "Project", "Projects", "EXPERIENCE", "Experience",
     "Internship", "SKILLS", "Skills",
     "Self-evaluation", "Honors", "Awards", "Certificates",
 ]
 
-# 学校关键词
 SCHOOL_KEYWORDS = [
     "大学", "学院", "University", "College", "Institute", "School",
     "Academy", "研究生院",
 ]
 
-# 学历关键词
 DEGREE_KEYWORDS = [
     "本科", "硕士", "博士", "研究生", "学士",
     "本科在读", "硕士在读", "博士在读",
@@ -67,20 +65,12 @@ DEGREE_KEYWORDS = [
 # ============================================================
 
 def _normalize_pdf_text(text: str) -> str:
-    """
-    修复 PDF 提取的常见问题：
-    - 断字： "性\n别：男" → "性别：男"
-    - 只合并第二个中文字后紧接 ：或 : 的情况，避免误合并正常换行。
-    """
-    # 只修复 PDF 特有的单字分行 + 分隔符模式
     text = re.sub(r'([\u4e00-\u9fa5])\n([\u4e00-\u9fa5][：:])', r'\1\2', text)
-    # 压缩多余空格
     text = re.sub(r'[ \t]+', ' ', text)
     return text
 
 
 def _first_n_lines(text: str, n: int = 20) -> List[str]:
-    """获取前 n 个非空行"""
     lines = []
     for line in text.strip().split("\n"):
         s = line.strip()
@@ -92,7 +82,6 @@ def _first_n_lines(text: str, n: int = 20) -> List[str]:
 
 
 def _header_categories(start_keywords: List[str]) -> str:
-    """判断一组 start_keywords 属于哪个节分类（edu / skill / exp / other）"""
     for kw in start_keywords:
         if kw in EDU_HEADERS:
             return "edu"
@@ -104,7 +93,6 @@ def _header_categories(start_keywords: List[str]) -> str:
 
 
 def _get_other_headers(category: str) -> List[str]:
-    """返回除了 cat 以外的所有节标题"""
     others = []
     if category != "edu":
         others.extend(EDU_HEADERS)
@@ -117,12 +105,6 @@ def _get_other_headers(category: str) -> List[str]:
 
 def _find_section(lines: List[str], start_keywords: List[str],
                   stop_keywords: List[str], start_from: int = 0) -> tuple:
-    """
-    在 lines 中定位一个节。
-    返回 (节起始行号, 节结束行号)，未找到返回 (-1, -1)。
-    只有不同类别的节标题才会触发节终止。
-    """
-    # 定位起始
     start_idx = -1
     for i in range(start_from, len(lines)):
         s = lines[i].strip().lower()
@@ -132,7 +114,6 @@ def _find_section(lines: List[str], start_keywords: List[str],
     if start_idx == -1:
         return (-1, -1)
 
-    # 确定当前节的分类，只将其他类的标题视为终止条件
     category = _header_categories(start_keywords)
     other_headers = [kw.lower() for kw in _get_other_headers(category)]
 
@@ -143,12 +124,15 @@ def _find_section(lines: List[str], start_keywords: List[str],
             continue
         sl = s.lower()
 
-        # 遇到其他类的节标题 → 终止
         if any(kw in sl for kw in other_headers):
-            end_idx = i
-            break
+            # 跳过疑似两栏侧边标签：行很短 ≤6 字且在节起始 3 行内
+            is_sidebar = (len(s) <= 6 and i - start_idx <= 3
+                          and not any(c.isdigit() for c in s))
+            if not is_sidebar:
+                end_idx = i
+                break
+            continue
 
-        # 遇到停止关键词且行较短 → 终止
         if any(sk.lower() in sl for sk in stop_keywords):
             if len(s) < 20:
                 end_idx = i
@@ -174,14 +158,17 @@ def extract_name(text: str) -> str:
             if candidate:
                 return candidate
 
-    # 跳过模式
+    # 跳过模式 —— 节标题 + 个人属性
     skip_re = re.compile(
         r'^(?:(?:性\s*别|生\s*日|籍\s*贯|出生|民\s*族|政\s*治|电\s*话|'
         r'手\s*机|邮\s*箱|学\s*历|求职|期望|个人|简\s*历'
         r'|RESUME|CV|Curriculum Vitae'
         r'|联系电话|电子邮箱|性 别|生 日|籍 贯|电 话|邮 箱|学 历|'
         r'年龄|身高|体重|婚\s*姻|健\s*康'
-        r')[:：].*)$',
+        r')[:：].*'
+        r'|科研经历|教育背景|教育经历|竞赛经历|项目经历|实习经历|'
+        r'工作经历|校园经历|社会实践|校内实践|专业技能|自我评价'
+        r')$',
         re.IGNORECASE
     )
 
@@ -189,7 +176,6 @@ def extract_name(text: str) -> str:
         parts = [p.strip() for p in line.split("|") if p.strip()]
         line_clean = parts[0]
 
-        # 跳过含长数字或邮箱的行
         stripped = (line_clean.replace("-", "").replace(" ", "")
                     .replace("(", "").replace(")", ""))
         if re.search(r'\d{8,}', stripped) or '@' in line_clean:
@@ -198,12 +184,28 @@ def extract_name(text: str) -> str:
         if skip_re.match(line_clean):
             continue
 
-        # 中文姓名：2~4 个汉字，非汉字字符不超过 2 个
+        # 中文姓名：2~4 个汉字
+        # 优先取行首的 2-4 字（解决"关文欣 南昌大学"）
+        m2 = re.match(r'^([\u4e00-\u9fa5]{2,4})\s', line_clean)
+        if m2:
+            candidate = m2.group(1)
+            # 过滤"科研经历"等节标题
+            if candidate not in ("科研经历", "教育背景", "教育经历",
+                                  "竞赛经历", "项目经历", "实习经历",
+                                  "工作经历", "专业技能", "自我评价",
+                                  "校园经历", "社会实践", "校内实践"):
+                return candidate
+
         chinese = re.findall(r'[\u4e00-\u9fa5]', line_clean)
         if 2 <= len(chinese) <= 4:
             non_alpha = len(re.sub(r'[\u4e00-\u9fa5\s]', '', line_clean))
             if non_alpha <= 2:
-                return line_clean.strip()
+                cand = line_clean.strip()
+                if cand not in ("科研经历", "教育背景", "教育经历",
+                                 "竞赛经历", "项目经历", "实习经历",
+                                 "工作经历", "专业技能", "自我评价",
+                                 "校园经历", "社会实践", "校内实践"):
+                    return cand
 
         # 英文姓名：2+ 个首字母大写的词
         words = [w for w in line_clean.split() if w.isalpha()]
@@ -214,12 +216,16 @@ def extract_name(text: str) -> str:
             if not any(w.lower() in skip_words for w in words):
                 return " ".join(words)
 
-    # 策略 3：兜底 —— 第一行纯汉字 2~4 字
+    # 策略 3：兜底 —— 第一行纯汉字 2~4 字（跳过已知节标题）
     for line in non_empty:
         stripped = line.strip()
         if 2 <= len(stripped) <= 4 and re.fullmatch(r'[\u4e00-\u9fa5]+',
                                                      stripped):
-            return stripped
+            if stripped not in ("科研经历", "教育背景", "教育经历",
+                                "竞赛经历", "项目经历", "实习经历",
+                                "工作经历", "专业技能", "自我评价",
+                                "校园经历", "社会实践", "校内实践"):
+                return stripped
 
     return ""
 
@@ -237,8 +243,13 @@ def extract_email(text: str) -> str:
 
 
 # ============================================================
-# 电话号码提取
+# 电话提取
 # ============================================================
+
+def _clean_phone(phone: str) -> str:
+    """清理电话号码中的空格、括号、短横线"""
+    return re.sub(r'[\s\-\(\)\（\）]', '', phone)
+
 
 def extract_phone(text: str) -> str:
     text = _normalize_pdf_text(text)
@@ -251,22 +262,22 @@ def extract_phone(text: str) -> str:
     # 2. 带 +86 前缀
     phones = re.findall(r'(?:\+?86[-. ]?)?1[3-9]\d{9}', text)
     if phones:
-        return phones[0]
+        return _clean_phone(phones[0])
 
-    # 3. (xxx) xxx-xxxx 或 xxx-xxx-xxxx
+    # 3. (xxx) xxx-xxxx 或 xxx-xxx-xxxx 或 xxx xxxx xxxx
     phones = re.findall(r'\(?\d{3}\)?[-.\s]?\d{3,4}[-.\s]?\d{4}', text)
     if phones:
-        return phones[0]
+        return _clean_phone(phones[0])
 
     # 4. 国际格式 +XX ...
     phones = re.findall(r'\+\d{1,3}[-.\s]?\d{4,14}', text)
     if phones:
-        return phones[0]
+        return _clean_phone(phones[0])
 
     # 5. 中国大陆固话
     phones = re.findall(r'0\d{2,3}[-.\s]?\d{7,8}', text)
     if phones:
-        return phones[0]
+        return _clean_phone(phones[0])
 
     return ""
 
@@ -276,19 +287,30 @@ def extract_phone(text: str) -> str:
 # ============================================================
 
 _DATE_PATTERNS = [
+    # 中文年-月到年-月  "2022 年1 月 – 2026 年5 月"
     r'(?:20|19)\d{2}\s*年\s*\d{1,2}\s*月\s*(?:[–\-—~]|至|到|to)\s*'
     r'(?:20|19)\d{2}\s*年\s*\d{1,2}\s*月',
-    r'(?:20|19)\d{2}\s*年\s*\d{1,2}\s*月',
+    # 中文年-月到今  "2022 年9 月 – 今"
+    r'(?:20|19)\d{2}\s*年\s*\d{1,2}\s*月\s*(?:[–\-—~]|至|到)\s*(?:今|至今)',
+    # 点号格式区间 "2022.09-2026.06"
     r'(?:20|19)\d{2}\.\d{1,2}\s*(?:[–\-—~]|至|到)\s*'
     r'(?:20|19)\d{2}\.\d{1,2}',
-    r'(?:20|19)\d{2}\.\d{1,2}',
+    # 点号格式到今 "2022.09-今"
+    r'(?:20|19)\d{2}\.\d{1,2}\s*(?:[–\-—~]|至|到)\s*(?:今|至今|Present|Now)',
+    # 点号到英文 "2022.09 - Present"
+    r'(?:20|19)\d{2}\.\d{1,2}\s*(?:[–\-—~]|至|到)\s*(?:Present|Now)',
+    # 斜杠格式
     r'(?:20|19)\d{2}/\d{1,2}\s*(?:[–\-—~]|至|到)\s*'
     r'(?:20|19)\d{2}/\d{1,2}',
+    # 纯年份区间
     r'(?:20|19)\d{2}\s*(?:[–\-—~]|至|到)\s*(?:20|19)\d{2}',
+    # 英文月份格式
     r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*'
     r'\s+(?:20|19)\d{2}\s*(?:[–\-—~]|至|到)\s*'
     r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*'
     r'\s+(?:20|19)\d{2}',
+    # 单端点号 "2022.09"
+    r'(?:20|19)\d{2}\.\d{1,2}',
 ]
 _DATE_RE = re.compile('|'.join(f'(?:{p})' for p in _DATE_PATTERNS))
 
@@ -301,10 +323,15 @@ _DEGREE_RE = re.compile(
     re.IGNORECASE
 )
 
-# 教育节内部的过滤关键词（个人联系方式等不属于教育的内容）
 _EDU_FILTER_KEYWORDS = [
-    "电话", "手机", "邮箱", "Email", "email", "学历",
+    "电话", "手机", "邮箱", "Email", "email",
     "性别", "生日", "籍贯", "民族", "出生", "政治面貌",
+]
+
+# 教育节内不应当作学校/学位行处理的排除关键词
+_EDU_SKIP_LINE_KEYWORDS = [
+    "荣誉奖项", "主修课程", "主要课程", "相关课程", "GPA",
+    "获奖经历", "排名", "英语水平", "CET",
 ]
 
 
@@ -316,15 +343,29 @@ def extract_education(text: str) -> List[Dict[str, str]]:
     if start_idx == -1:
         return []
 
-    # 收集教育节内容，跳过个人属性行
+    # 收集教育节内容，跳过个人属性行和教育无关行
     edu_lines = []
     for line in lines[start_idx + 1:end_idx]:
         s = line.strip()
         if not s:
             continue
-        # 跳过明显不属于教育的行
         if any(kw in s for kw in _EDU_FILTER_KEYWORDS):
             continue
+        if any(kw in s for kw in _EDU_SKIP_LINE_KEYWORDS):
+            continue
+        # 排除纯符号行
+        if re.search(r'^[\s•●⚫\-–—*★☆]+$', s):
+            continue
+        # 排除"姓名 学校"这种行（如"关文欣 南昌大学"）
+        if re.match(r'^[\u4e00-\u9fa5]{2,4}\s+', s):
+            name_part = re.match(r'^([\u4e00-\u9fa5]{2,4})', s).group(1)
+            if name_part not in ("科研经历", "教育背景", "教育经历",
+                                  "竞赛经历", "项目经历", "实习经历",
+                                  "工作经历", "专业技能", "自我评价",
+                                  "校园经历", "社会实践", "校内实践"):
+                # 如果不是学校名（如"东北大学"），则跳过这个人名行
+                if not any(kw in name_part for kw in SCHOOL_KEYWORDS):
+                    continue
         edu_lines.append(s)
 
     if not edu_lines:
@@ -375,30 +416,35 @@ def extract_education(text: str) -> List[Dict[str, str]]:
         edu = {"school": "", "degree": "", "major": "", "period": ""}
 
         for cinfo in entry:
+            raw = cinfo["raw"]
             if cinfo["type"] == "date" and not edu["period"]:
-                edu["period"] = cinfo.get("date_raw", cinfo["raw"])
+                edu["period"] = cinfo.get("date_raw", raw)
             elif cinfo["type"] == "school" and not edu["school"]:
-                edu["school"] = cinfo["raw"]
+                edu["school"] = raw
             elif cinfo["type"] == "degree" and not edu["degree"]:
-                edu["degree"] = cinfo["raw"]
+                edu["degree"] = raw
             elif cinfo["type"] == "mixed":
                 raw = cinfo["raw"]
                 if not edu["school"] and _SCHOOL_RE.search(raw):
-                    edu["school"] = raw
+                    # 从混合行中剥离日期部分，只取学校内容
+                    date_part = cinfo.get("date_raw", "")
+                    if date_part:
+                        school_candidate = raw.replace(date_part, "", 1).strip().lstrip("-\u2013\u2014\u2010 ")
+                    else:
+                        school_candidate = raw
+                    edu["school"] = school_candidate
                 if not edu["degree"] and _DEGREE_RE.search(raw):
                     edu["degree"] = raw
                 if not edu["period"] and cinfo.get("date_raw"):
                     edu["period"] = cinfo["date_raw"]
             elif cinfo["type"] == "other":
-                raw_c = cinfo["raw"]
-                if any(kw in raw_c for kw in
-                       ["主修课程", "主要课程", "GPA", "相关课程", "GPA"]):
+                if any(kw in raw for kw in
+                       ["主修课程", "主要课程", "GPA", "相关课程"]):
                     continue
-                # 跳过 "•" "" 等纯符号行
-                if re.search(r'^[\s•●\-–—*★☆]+$', raw_c):
+                if re.search(r'^[\s•●⚫\-–—*★☆]+$', raw):
                     continue
                 if not edu["major"] and edu["school"]:
-                    edu["major"] = raw_c
+                    edu["major"] = raw
 
         if edu["school"]:
             result.append(edu)
@@ -421,7 +467,7 @@ def extract_skill_section(text: str) -> str:
     skill_lines = []
     for line in lines[sidx + 1:eidx]:
         s = line.strip()
-        if s and not re.search(r'^[\s•●\-–—*★☆]+$', s):
+        if s and not re.search(r'^[\s•●⚫\-–—*★☆]+$', s):
             skill_lines.append(s)
     return "\n".join(skill_lines) if skill_lines else ""
 
@@ -440,10 +486,7 @@ def _extract_skill_fallback(text: str) -> str:
                 in_section = True
                 skill_lines.append(s)
             continue
-
-        # 其他类节标题 → 结束
-        other_headers = [kw.lower() for kw in
-                         EDU_HEADERS + EXP_HEADERS]
+        other_headers = [kw.lower() for kw in EDU_HEADERS + EXP_HEADERS]
         if any(h in s.lower() for h in other_headers):
             break
         skill_lines.append(s)
@@ -472,19 +515,19 @@ def extract_experience(text: str) -> List[Dict[str, str]]:
     if not exp_lines:
         return []
 
+    # 多格式日期（含中文"年"、"月"、"日"）
     exp_date_re = re.compile(
-        r'(?:(?:20|19)\d{2}\s*(?:[./]?\d{1,2})?\s*'
+        r'(?:(?:20|19)\d{2}(?:\.\d{1,2})?\s*'
         r'(?:[–\-—~]|至|到)\s*'
-        r'(?:20|19)\d{2}\s*(?:[./]?\d{1,2})?'
+        r'(?:20|19)\d{2}(?:\.\d{1,2})?'
         r')|'
-        r'(?:20|19)\d{2}\s*(?:[./]?\d{1,2})?'
+        r'(?:20|19)\d{2}\.\d{1,2}'
     )
 
-    # 按日期开头分组条目
     entries_raw = []
     current = []
     for line in exp_lines:
-        if re.match(r'(?:20|19)\d{2}', line):
+        if re.match(r'(?:20|19)\d{2}\.\d{1,2}(?:\s*(?:[–\-—~]|至|到)\s*(?:20|19)\d{2})?(?:\.\d{1,2})?', line):
             if current:
                 entries_raw.append(current)
             current = [line]
@@ -531,7 +574,3 @@ def extract_all(text: str) -> dict:
         "skill_section": extract_skill_section(text),
         "experience": extract_experience(text),
     }
-
-# ============================================================
-# (patch) 改进 extract_experience：支持单日期模式
-# ============================================================
